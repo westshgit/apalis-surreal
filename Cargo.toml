@@ -1,0 +1,38 @@
+[package]
+name = "apalis-surreal"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["task-tracking"]
+task-tracking = ["apalis-core/task-context"]
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["rt", "sync"] }
+tracing = { version = "0.1.44" }
+apalis = { version = "1.0.0", features = ["filter", "shared", "task-context"] }
+apalis-core = { version = "1.0.0", features = [
+    "serde",
+    "sleep",
+    "task-context",
+    "shared",
+    "uuid",
+] }
+apalis-codec = { version = "1.0.0", features = ["json"] }
+derive-new = { version = "0.7.0" }
+pin-project = { version = "1.1.13" }
+derive_more = { version = "2.1.1", features = ["deref", "deref_mut"] }
+typed-builder = { version = "0.23.2" }
+thiserror = { version = "2.0.21" }
+uuid = { version = "1.29.0", features = ["serde", "v4"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154" }
+surrealdb = { version = "3.3.4" }
+chrono = { version = "0.4.45", features = ["serde", "std", "clock"] }
+futures = { version = "0.3.34" }
+
+[dev-dependencies]
+anyhow = { version = "1.0.104" }
+surrealdb = { version = "3.3.4", features = ["kv-mem"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+apalis-workflow = { version = "1.0.0" }
