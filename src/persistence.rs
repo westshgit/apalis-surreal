@@ -5,7 +5,7 @@ use apalis_core::{backend::persistence::{Persistence, TaskEvent},
                   worker::context::WorkerContext};
 use chrono::Utc;
 use serde_json::Value;
-use surrealdb::{Connection, Surreal, engine::local::Db};
+use surrealdb::{Connection, Surreal};
 
 use crate::{Error,
             config::Config,
@@ -13,7 +13,7 @@ use crate::{Error,
             sink::push_tasks};
 
 #[derive(Debug, new, Clone, TypedBuilder)]
-pub struct SurrealPersistence<C: Connection = Db> {
+pub struct SurrealPersistence<C: Connection> {
     pub(crate) db:     Surreal<C>,
     #[builder(default)]
     pub(crate) config: Config,

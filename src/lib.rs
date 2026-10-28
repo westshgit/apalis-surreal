@@ -4,20 +4,24 @@
 #![deny(clippy::print_stderr)]
 #![warn(clippy::unwrap_used)]
 
-use std::{marker::PhantomData,
-          task::{Context, Poll}};
+use std::{
+    marker::PhantomData,
+    task::{Context, Poll},
+};
 
 use apalis_codec::json::JsonCodec;
-use apalis_core::{backend::{Backend,
-                            BackendConfig,
-                            WireFormatBackend,
-                            ext::poll_strategy::{PollWith, StreamStrategy},
-                            finalize::Durable,
-                            persistence::{Persisted, TaskPersistLayer}},
-                  task::{Task, task_id::TaskId},
-                  worker::context::WorkerContext};
+use apalis_core::{
+    backend::{
+        Backend, BackendConfig, WireFormatBackend,
+        ext::poll_strategy::{PollWith, StreamStrategy},
+        finalize::Durable,
+        persistence::{Persisted, TaskPersistLayer},
+    },
+    task::{Task, task_id::TaskId},
+    worker::context::WorkerContext,
+};
 use serde_json::Value;
-use surrealdb::{Connection, Surreal, engine::local::Db};
+use surrealdb::{Connection, Surreal};
 use uuid::Uuid;
 
 #[macro_use]
@@ -38,35 +42,44 @@ pub mod queries;
 mod sink;
 mod surreal_task;
 
-pub use crate::{config::Config,
-                error::Error,
-                factory::{SharedFetcher, SurrealFactoryError, SurrealStorageFactory},
-                persistence::SurrealPersistence,
-                pubsub::{InsertEvent, Pubsub},
-                surreal_task::{JOBS_TABLE, SurrealTaskRow, WORKERS_TABLE}};
+pub use crate::{
+    config::Config,
+    error::Error,
+    factory::{SharedFetcher, SurrealFactoryError, SurrealStorageFactory},
+    persistence::SurrealPersistence,
+    pubsub::{InsertEvent, Pubsub},
+    surreal_task::{JOBS_TABLE, SurrealTaskRow, WORKERS_TABLE},
+};
 
 /// A backend for persisting and consuming jobs behind a SurrealDB database.
 #[pin_project::pin_project]
 #[derive(Debug, TypedBuilder)]
-pub struct SurrealStorage<Args, C = Db>
+pub struct SurrealStorage<Args, C>
 where
     C: Connection + Clone,
 {
     #[pin]
     pub(crate) p: Persisted<SurrealPersistence<C>>,
     #[builder(default)]
-    codec:        JsonCodec,
+    codec: JsonCodec,
     #[builder(default)]
-    _marker:      PhantomData<Args>,
+    _marker: PhantomData<Args>,
 }
 
 impl<Args, C: Connection + Clone> Clone for SurrealStorage<Args, C> {
     fn clone(&self) -> Self {
-        Self { p: self.p.clone(), codec: self.codec.clone(), _marker: PhantomData }
+        Self {
+            p: self.p.clone(),
+            codec: self.codec.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
-impl SurrealStorage<(), Db> {
+impl<T> SurrealStorage<(), T>
+where
+    T: Connection + Clone,
+{
     /// Runs the SurrealDB schema setup (`DEFINE TABLE` and `DEFINE INDEX` statements)
     /// for `apalis_jobs` and `apalis_workers`.
     pub async fn setup<C: Connection>(db: &Surreal<C>) -> Result<(), Error> {
@@ -83,7 +96,11 @@ where
     pub fn new(db: Surreal<C>) -> Self {
         let config = Config::default().queue(std::any::type_name::<Args>());
         let p = Persisted::new(SurrealPersistence::new(db, config));
-        Self { p, codec: JsonCodec::default(), _marker: PhantomData }
+        Self {
+            p,
+            codec: JsonCodec::default(),
+            _marker: PhantomData,
+        }
     }
 
     /// Mount a standalone [`Pubsub`] listener powered by SurrealDB Live Queries (`LIVE SELECT`).
@@ -130,15 +147,28 @@ where
     type Error = Error;
     type Task = Task<Vec<u8>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>, worker: &WorkerContext) -> Poll<Result<(), Self::Error>> {
-        self.p.poll_ready(cx, worker, self.config().heartbeat_interval)
+    fn poll_ready(
+        &mut self,
+        cx: &mut Context<'_>,
+        worker: &WorkerContext,
+    ) -> Poll<Result<(), Self::Error>> {
+        self.p
+            .poll_ready(cx, worker, self.config().heartbeat_interval)
     }
 
-    fn poll_next(&mut self, cx: &mut Context<'_>, worker: &WorkerContext) -> Poll<Option<Result<Self::Task, Self::Error>>> {
+    fn poll_next(
+        &mut self,
+        cx: &mut Context<'_>,
+        worker: &WorkerContext,
+    ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
         self.p.poll_next(cx, worker)
     }
 
-    fn poll_close(&mut self, cx: &mut Context<'_>, worker: &WorkerContext) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(
+        &mut self,
+        cx: &mut Context<'_>,
+        worker: &WorkerContext,
+    ) -> Poll<Result<(), Self::Error>> {
         self.p.poll_close(cx, worker)
     }
 }
@@ -186,33 +216,44 @@ mod tests {
     use apalis_workflow::SteppedFlow;
     use futures::{StreamExt, stream};
     use serde::{Deserialize, Serialize};
-    use surrealdb::{Surreal, engine::local::Mem};
+    use surrealdb::{
+        Surreal,
+        engine::local::{Db, Mem},
+    };
 
     use super::*;
 
     async fn setup_mem_db() -> anyhow::Result<Surreal<Db>> {
         let db = Surreal::new::<Mem>(()).await?;
         db.use_ns("test").use_db("test").await?;
-        SurrealStorage::setup(&db).await?;
+        SurrealStorage::<(), Db>::setup(&db).await?;
         Ok(db)
     }
 
     #[tokio::test]
     async fn basic_worker() -> anyhow::Result<()> {
         let db = setup_mem_db().await?;
-        let config = Config::default().queue("sample").batch_size(50).lock_tasks(false);
+        let config = Config::default()
+            .queue("sample")
+            .batch_size(50)
+            .lock_tasks(false);
         let mut backend = SurrealStorage::new(db).with_config(config);
 
         let mut items = stream::repeat_with(HashMap::default).take(1);
         backend.push_stream(&mut items).await?;
 
-        async fn send_reminder(_: HashMap<String, String>, wrk: WorkerContext) -> Result<(), BoxDynError> {
+        async fn send_reminder(
+            _: HashMap<String, String>,
+            wrk: WorkerContext,
+        ) -> Result<(), BoxDynError> {
             tokio::time::sleep(Duration::from_millis(200)).await;
             wrk.stop().expect("stop worker");
             Ok(())
         }
 
-        let worker = WorkerBuilder::new("rango-tango-1").backend(backend).build(send_reminder);
+        let worker = WorkerBuilder::new("rango-tango-1")
+            .backend(backend)
+            .build(send_reminder);
         worker.run().await.expect("worker run");
 
         Ok(())
@@ -244,10 +285,15 @@ mod tests {
         }
 
         let ctx = WorkerContext::new("rango-tango-2");
-        let worker = WorkerBuilder::new(&ctx).backend(backend).build(send_reminder);
+        let worker = WorkerBuilder::new(&ctx)
+            .backend(backend)
+            .build(send_reminder);
         worker.run().await.expect("worker run");
         let run_for = ctx.elapsed();
-        assert!(run_for < Duration::from_secs(3), "Worker did not use SurrealDB LIVE SELECT mechanism");
+        assert!(
+            run_for < Duration::from_secs(3),
+            "Worker did not use SurrealDB LIVE SELECT mechanism"
+        );
 
         Ok(())
     }
@@ -256,7 +302,7 @@ mod tests {
     async fn test_workflow_complete() -> anyhow::Result<()> {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         struct PipelineConfig {
-            min_confidence:   f32,
+            min_confidence: f32,
             enable_sentiment: bool,
         }
 
@@ -267,14 +313,14 @@ mod tests {
 
         #[derive(Debug, Serialize, Deserialize)]
         struct Classified {
-            text:       String,
-            label:      String,
+            text: String,
+            label: String,
             confidence: f32,
         }
 
         #[derive(Debug, Serialize, Deserialize)]
         struct Summary {
-            text:      String,
+            text: String,
             sentiment: Option<String>,
         }
 
@@ -293,8 +339,7 @@ mod tests {
                         text: x.to_owned(),
                         label: if x.contains("rust") {
                             "Tech"
-                        }
-                        else {
+                        } else {
                             "General"
                         }
                         .to_owned(),
@@ -303,27 +348,27 @@ mod tests {
                     .collect::<Vec<_>>();
                 Ok::<_, BoxDynError>(results)
             })
-            .filter_map(|c: Classified| async move {
-                if c.confidence >= 0.6 {
-                    Some(c)
-                }
-                else {
-                    None
-                }
-            })
+            .filter_map(
+                |c: Classified| async move { if c.confidence >= 0.6 { Some(c) } else { None } },
+            )
             .filter_map(move |c: Classified, config: Data<PipelineConfig>| {
                 let cfg = config.enable_sentiment;
                 async move {
                     if !cfg {
-                        return Some(Summary { text: c.text, sentiment: None });
+                        return Some(Summary {
+                            text: c.text,
+                            sentiment: None,
+                        });
                     }
                     let sentiment = if c.text.contains("delightful") {
                         "positive"
-                    }
-                    else {
+                    } else {
                         "neutral"
                     };
-                    Some(Summary { text: c.text, sentiment: Some(sentiment.to_owned()) })
+                    Some(Summary {
+                        text: c.text,
+                        sentiment: Some(sentiment.to_owned()),
+                    })
                 }
             })
             .and_then(|a: Vec<Summary>, worker: WorkerContext| async move {
@@ -335,12 +380,17 @@ mod tests {
         let config = Config::default().queue("test_workflow");
         let mut backend = SurrealStorage::new(db).with_config(config).with_pubsub();
 
-        let input = UserInput { text: "Rust makes systems programming delightful!".to_owned() };
+        let input = UserInput {
+            text: "Rust makes systems programming delightful!".to_owned(),
+        };
         backend.push(input).await?;
 
         let worker = WorkerBuilder::new("rango-tango")
             .backend(backend)
-            .data(PipelineConfig { min_confidence: 0.8, enable_sentiment: true })
+            .data(PipelineConfig {
+                min_confidence: 0.8,
+                enable_sentiment: true,
+            })
             .build(workflow);
         worker.run().await.expect("workflow run");
 
@@ -358,7 +408,10 @@ mod tests {
         backend.push_task(TaskBuilder::new(42u32).build()).await?;
 
         let queues = backend.list_queues().await?;
-        let info = queues.iter().find(|info| info.name == queue).expect("queue is listed");
+        let info = queues
+            .iter()
+            .find(|info| info.name == queue)
+            .expect("queue is listed");
 
         let stat = |title: &str| {
             info.stats
