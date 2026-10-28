@@ -76,7 +76,7 @@ impl<Args, C: Connection + Clone> Clone for SurrealStorage<Args, C> {
     }
 }
 
-impl<T> SurrealStorage<(), T>
+impl<Args, T> SurrealStorage<Args, T>
 where
     T: Connection + Clone,
 {
